@@ -1,50 +1,70 @@
-/**
- * Welcome to Cloudflare Workers!
- *
- * This is a template for a Scheduled Worker: a Worker that can run on a
- * configurable interval:
- * https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
-
 export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
-	// MY_KV_NAMESPACE: KVNamespace;
-	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	// MY_DURABLE_OBJECT: DurableObjectNamespace;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
-	// MY_BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
-	//
-	// Example binding to a D1 Database. Learn more at https://developers.cloudflare.com/workers/platform/bindings/#d1-database-bindings
-	// DB: D1Database
+  GOCOMICS_SLUG: string;
+  WEBHOOK_ID: string;
+  WEBHOOK_TOKEN: string;
 }
 
 export default {
-	// The scheduled handler is invoked at the interval set in our wrangler.toml's
-	// [[triggers]] configuration.
-	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-		// A Cron Trigger can make requests to other endpoints on the Internet,
-		// publish to a Queue, query a D1 Database, and much more.
-		//
-		// We'll keep it simple and make an API call to a Cloudflare API:
-		let resp = await fetch('https://api.cloudflare.com/client/v4/ips');
-		let wasSuccessful = resp.ok ? 'success' : 'fail';
+  async scheduled(
+    event: ScheduledEvent,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    console.log(`Checking for today's ${env.GOCOMICS_SLUG} comic...`);
+    // We were originally checking the index for today's comic (whatever is
+    // the latest comic regardless of client timezone) but it turns out that
+    // it doesn't stop implying "Today's comic" when the comic isn't from today.
+    // So instead we're doing it the more predictable way.
 
-		// You could store this result in KV, write to a D1 Database, or publish to a Queue.
-		// In this template, we'll just log the result:
-		console.log(`trigger fired at ${event.cron}: ${wasSuccessful}`);
-	},
+    const now = new Date(event.scheduledTime);
+    const formatted = [
+      now.getUTCFullYear(),
+      now.getUTCMonth() + 1,
+      now.getUTCDate(),
+    ]
+      .map(String)
+      .join("/");
+
+    // This is not a very performance-critical application so I opted to use
+    // this public scraper rather than re-invent the wheel.
+    // https://github.com/adamschwartz/web.scraper.workers.dev
+    const url = new URL("https://web.scraper.workers.dev");
+    url.searchParams.set(
+      "url",
+      `https://www.gocomics.com/${env.GOCOMICS_SLUG}/${formatted}`,
+    );
+    url.searchParams.set("selector", "picture.item-comic-image>img");
+    url.searchParams.set("scrape", "attr");
+    url.searchParams.set("attr", "src");
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw Error(`Bad response from scraper: ${response.status}`);
+    }
+
+    const data = (await response.json()) as { result: string };
+    if (!data.result) {
+      throw Error(`No image found on ${env.GOCOMICS_SLUG} page (${formatted})`);
+    }
+
+    await fetch(
+      `https://discord.com/api/v10/webhooks/${env.WEBHOOK_ID}/${env.WEBHOOK_TOKEN}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          embeds: [
+            {
+              title: `<t:${Math.floor(event.scheduledTime / 1000)}:D>`,
+              url: url.searchParams.get("url"),
+              image: { url: data.result },
+              color: 0xfefefe,
+              // footer: { text: env.GOCOMICS_SLUG },
+            },
+          ],
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  },
 };
