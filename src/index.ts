@@ -4,19 +4,41 @@ export interface Env {
   WEBHOOK_TOKEN: string;
 }
 
+const stdTimezoneOffset = (date: Date) => {
+  const jan = new Date(date.getFullYear(), 0, 1);
+  const jul = new Date(date.getFullYear(), 6, 1);
+  return Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
+};
+
+const convertTZ = (date: Date, tzString: string) =>
+  new Date(date.toLocaleString("en-US", { timeZone: tzString }));
+
+const isDstObserved = (date: Date) => {
+  const today = convertTZ(date, "America/New_York");
+  return today.getTimezoneOffset() < stdTimezoneOffset(today);
+};
+
 export default {
   async scheduled(
     event: ScheduledEvent,
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
+    const now = new Date(event.scheduledTime);
+    const { cron } = event;
+    // 15:00 for standard time, 14:00 for daylight time (according to EST/EDT)
+    if (cron === "0 15 * * *" && isDstObserved(now)) {
+      return;
+    } else if (cron === "0 14 * * *" && !isDstObserved(now)) {
+      return;
+    }
+
     console.log(`Checking for today's ${env.GOCOMICS_SLUG} comic...`);
     // We were originally checking the index for today's comic (whatever is
     // the latest comic regardless of client timezone) but it turns out that
     // it doesn't stop implying "Today's comic" when the comic isn't from today.
     // So instead we're doing it the more predictable way.
 
-    const now = new Date(event.scheduledTime);
     const formatted = [
       now.getUTCFullYear(),
       now.getUTCMonth() + 1,
