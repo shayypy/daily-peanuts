@@ -2,35 +2,7 @@ export interface Env {
   GOCOMICS_SLUG: string;
   WEBHOOK_ID: string;
   WEBHOOK_TOKEN: string;
-}
-
-interface ComicPagePayload {
-  "@context": "https://schema.org";
-  "@type": "ImageObject" | "ComicSeries";
-  // comicseries
-  isAccessibleForFree?: boolean;
-  genre?: string;
-  inLanguage?: string;
-  publisher?: {
-    "@type": string;
-    name: string;
-    url: string;
-    logo: { "@type": string; url: string };
-    sameAs: string[];
-  };
-
-  name: string;
-  description: string;
-  url: string;
-  author: { "@type": string; name: string };
-  contentUrl: string;
-  creator: {
-    "@type": string;
-    name: string;
-    url: string;
-  };
-  datePublished: string;
-  representativeOfPage: boolean;
+  API?: Fetcher;
 }
 
 const stdTimezoneOffset = (date: Date) => {
@@ -73,67 +45,40 @@ export default {
     // So instead we're doing it the more predictable way.
 
     const formatted = [
-      now.getUTCFullYear(),
-      now.getUTCMonth() + 1,
-      now.getUTCDate(),
-    ]
-      .map(String)
-      .join("/");
+      now.getUTCFullYear().toString(),
+      (now.getUTCMonth() + 1).toString().padStart(2, "0"),
+      now.getUTCDate().toString().padStart(2, "0"),
+    ].join("-");
 
-    // This is not a very performance-critical application so I opted to use
-    // this public scraper rather than re-invent the wheel.
-    // https://github.com/adamschwartz/web.scraper.workers.dev
-    const url = new URL("https://web.scraper.workers.dev");
-    url.searchParams.set(
-      "url",
-      `https://www.gocomics.com/${env.GOCOMICS_SLUG}/${formatted}`,
-    );
-    const selector = `div[data-sentry-component="ComicViewer"] script[type="application/ld+json"][data-sentry-component="Schema"]`;
-    url.searchParams.set("selector", selector);
-    url.searchParams.set("scrape", "text");
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw Error(`Bad response from scraper: ${response.status}`);
+    const route = `/api/v1/comics/${env.GOCOMICS_SLUG}/strips/${formatted}`;
+    let response: Response;
+    if (env.API) {
+      response = await env.API.fetch(`http://localhost${route}`);
+    } else {
+      response = await fetch(`https://fxgocomics.com${route}`);
     }
-
-    const data = (await response.json()) as {
-      result: Record<string, string[]>;
-    };
-    console.log("Result:", data.result);
-    if (!data.result || !data.result[selector]?.length) {
+    if (!response.ok) {
       throw Error(
-        `No suitable data found on ${env.GOCOMICS_SLUG} page (${formatted})`,
+        `Bad response from API: ${response.status} - ${await response.text()}`,
       );
     }
 
-    let strip: ComicPagePayload | undefined;
+    const data = (await response.json()) as {
+      title: string;
+      canonicalUrl: string;
+      imageUrl: string;
+      published: string;
+    };
     let image: Blob | undefined;
-    for (const raw of data.result[selector]) {
-      let parsed: ComicPagePayload;
-      try {
-        parsed = JSON.parse(raw) as ComicPagePayload;
-      } catch {
-        console.log("Failed to parse as JSON:", raw);
-        continue;
-      }
-      console.log("Parsed:", parsed);
-      if (parsed.representativeOfPage && parsed.contentUrl) {
-        console.log("Found good payload with content URL:", parsed.contentUrl);
-        const response = await fetch(parsed.contentUrl, { method: "GET" });
-        // console.log({ response });
-        if (
-          response.ok &&
-          response.headers.get("Content-Type")?.startsWith("image/")
-        ) {
-          strip = parsed;
-          image = await response.blob();
-          break;
-        }
-      }
-    }
-    if (!strip || !image) {
+    const imageResponse = await fetch(data.imageUrl, { method: "GET" });
+    if (
+      imageResponse.ok &&
+      imageResponse.headers.get("Content-Type")?.startsWith("image/")
+    ) {
+      image = await imageResponse.blob();
+    } else {
       throw Error(
-        `No suitable data found on ${env.GOCOMICS_SLUG} page (${formatted}) after ${data.result[selector].length} data scripts`,
+        `Failed to fetch image data from ${env.GOCOMICS_SLUG} page ${formatted}`,
       );
     }
 
@@ -142,14 +87,14 @@ export default {
     form.set(
       "payload_json",
       JSON.stringify({
-        content: `[${strip.name}](<https://www.gocomics.com/${env.GOCOMICS_SLUG}/${formatted}>)`,
+        content: `[${data.title}](<${data.canonicalUrl}>)`,
         attachments: [{ id: 0 }],
         allowed_mentions: { parse: [] },
       }),
     );
     // They are actually type image/gif, but you can pretend they're PNGs and
     // remove the GIF badge in the corner.
-    form.set("files[0]", image, `${formatted.replace(/\//g, "-")}.png`);
+    form.set("files[0]", image, `${formatted}.png`);
     console.log(form);
 
     const discordResponse = await fetch(
