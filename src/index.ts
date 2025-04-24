@@ -69,39 +69,24 @@ export default {
       imageUrl: string;
       published: string;
     };
-    let image: Blob | undefined;
-    const imageResponse = await fetch(data.imageUrl, { method: "GET" });
-    if (
-      imageResponse.ok &&
-      imageResponse.headers.get("Content-Type")?.startsWith("image/")
-    ) {
-      image = await imageResponse.blob();
-    } else {
-      throw Error(
-        `Failed to fetch image data from ${env.GOCOMICS_SLUG} page ${formatted}`,
-      );
-    }
-
-    console.log("Creating formdata");
-    const form = new FormData();
-    form.set(
-      "payload_json",
-      JSON.stringify({
-        content: `[${data.title}](<${data.canonicalUrl}>)`,
-        attachments: [{ id: 0 }],
-        allowed_mentions: { parse: [] },
-      }),
-    );
-    // They are actually type image/gif, but you can pretend they're PNGs and
-    // remove the GIF badge in the corner.
-    form.set("files[0]", image, `${formatted}.png`);
-    console.log(form);
-
     const discordResponse = await fetch(
-      `https://discord.com/api/v10/webhooks/${env.WEBHOOK_ID}/${env.WEBHOOK_TOKEN}`,
+      `https://discord.com/api/v10/webhooks/${env.WEBHOOK_ID}/${env.WEBHOOK_TOKEN}?with_components=true`,
       {
         method: "POST",
-        body: form,
+        body: JSON.stringify({
+          flags: 1 << 15,
+          components: [
+            {
+              type: 10,
+              content: `[${data.title}](<${data.canonicalUrl}>)`,
+            },
+            {
+              type: 12,
+              items: [{ media: { url: data.imageUrl } }],
+            },
+          ],
+        }),
+        headers: { "Content-Type": "application/json" },
       },
     );
     console.log({ discordResponse });
